@@ -28,6 +28,9 @@
 #include "runtime/os.inline.hpp"
 #include "vm_version_aarch64.hpp"
 
+// Armv8.6-A (FEAT_ECV) mandates a system counter frequency of 1GHz.
+static const jlong ARMV8_6_FREQUENCY_HZ = 1000000000LL;
+
 jlong Cntvctss::_epoch = 0;
 
 jlong Cntvctss::set_epoch() {
@@ -36,11 +39,10 @@ jlong Cntvctss::set_epoch() {
   return _epoch;
 }
 
-static bool ergonomics() {
+bool Cntvctss::ergonomics() {
   if (Cntvctss::is_supported()) {
     FLAG_SET_ERGO_IF_DEFAULT(UseFastUnorderedTimeStamps, true);
   } else if (UseFastUnorderedTimeStamps) {
-    assert(!FLAG_IS_DEFAULT(UseFastUnorderedTimeStamps), "Unexpected default value");
     warning("Ignoring UseFastUnorderedTimeStamps, hardware does not support FEAT_ECV");
     FLAG_SET_ERGO(UseFastUnorderedTimeStamps, false);
   }
@@ -49,7 +51,7 @@ static bool ergonomics() {
 
 bool Cntvctss::initialize() {
   assert(0 == _epoch, "invariant");
-  if (!ergonomics()) {
+  if (!UseFastUnorderedTimeStamps) {
     return false;
   }
   set_epoch();
@@ -57,11 +59,13 @@ bool Cntvctss::initialize() {
 }
 
 bool Cntvctss::is_supported() {
-  return VM_Version::supports_ecv();
+  return VM_Version::supports_ecv() &&
+         // Sanity check against emulators without the mandated frequency
+         os::cntfrq() == ARMV8_6_FREQUENCY_HZ;
 }
 
 jlong Cntvctss::frequency() {
-  return 1000000000LL; // Generic Timer runs at 1 GHz on Armv8.6-A+ (FEAT_ECV)
+  return ARMV8_6_FREQUENCY_HZ;
 }
 
 jlong Cntvctss::elapsed_counter() {
