@@ -521,11 +521,11 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
   ShenandoahMarkingContext* const ctx = marking_context();
 
   HeapWord* tams = ctx->top_at_mark_start(region);
+  HeapWord* limit_bitmap = MIN2(limit, tams);
 
   // Step 1. Scan below the TAMS based on bitmap data.
   // Try to scan the initial candidate. If the candidate is above the TAMS, it would
   // fail the subsequent "< limit_bitmap" checks, and fall through to Step 2.
-  HeapWord* limit_bitmap = MIN2(limit, tams);
   HeapWord* cb = ctx->get_next_marked_addr(region->bottom(), limit_bitmap);
   while (cb < limit_bitmap) {
     assert (cb < tams,  "only objects below TAMS here: "  PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(tams));
