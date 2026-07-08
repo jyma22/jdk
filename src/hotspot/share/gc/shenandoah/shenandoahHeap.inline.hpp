@@ -516,20 +516,17 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
 template<class T>
 inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, T* cl, HeapWord* limit) {
   assert(!region->is_humongous_continuation(), "no humongous continuation regions here");
+  assert(limit <= region->top(), "sanity");
 
   ShenandoahMarkingContext* const ctx = marking_context();
 
   HeapWord* tams = ctx->top_at_mark_start(region);
 
-  constexpr size_t skip_bitmap_delta = 1;
-  HeapWord* start = region->bottom();
-  HeapWord* end = MIN2(tams, region->end());
-
   // Step 1. Scan below the TAMS based on bitmap data.
   // Try to scan the initial candidate. If the candidate is above the TAMS, it would
   // fail the subsequent "< limit_bitmap" checks, and fall through to Step 2.
   HeapWord* limit_bitmap = MIN2(limit, tams);
-  HeapWord* cb = ctx->get_next_marked_addr(start, end);
+  HeapWord* cb = ctx->get_next_marked_addr(region->bottom(), limit_bitmap);
   while (cb < limit_bitmap) {
     assert (cb < tams,  "only objects below TAMS here: "  PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(tams));
     assert (cb < limit, "only objects below limit here: " PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(limit));
@@ -537,7 +534,13 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
     assert(oopDesc::is_oop(obj), "sanity");
     assert(ctx->is_marked(obj), "object expected to be marked");
 
-    cb = ctx->get_next_marked_addr(cb + skip_bitmap_delta, limit_bitmap);
+    // Compute the next object address and initiate prefetches for it,
+    // while we are processing current object.
+    constexpr size_t skip_bitmap_delta = 1;
+    cb += skip_bitmap_delta;
+    if (cb < limit_bitmap) {
+      cb = ctx->get_next_marked_addr(cb, limit_bitmap);
+    }
     Prefetch::read(cb, 0);
     Prefetch::read(cb, 32);
 
@@ -555,6 +558,8 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
     assert(oopDesc::is_oop(obj), "sanity");
     assert(ctx->is_marked(obj), "object expected to be marked");
 
+    // Compute the next object address and initiate prefetches for it,
+    // while we are processing current object.
     cs += ShenandoahForwarding::size(obj);
     Prefetch::read(cs, 0);
     Prefetch::read(cs, 32);
