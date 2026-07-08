@@ -515,74 +515,33 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
 
 template<class T>
 inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, T* cl, HeapWord* limit) {
-  assert(! region->is_humongous_continuation(), "no humongous continuation regions here");
+  assert(!region->is_humongous_continuation(), "no humongous continuation regions here");
 
   ShenandoahMarkingContext* const ctx = marking_context();
 
   HeapWord* tams = ctx->top_at_mark_start(region);
 
-  size_t skip_bitmap_delta = 1;
+  constexpr size_t skip_bitmap_delta = 1;
   HeapWord* start = region->bottom();
   HeapWord* end = MIN2(tams, region->end());
 
   // Step 1. Scan below the TAMS based on bitmap data.
-  HeapWord* limit_bitmap = MIN2(limit, tams);
-
   // Try to scan the initial candidate. If the candidate is above the TAMS, it would
   // fail the subsequent "< limit_bitmap" checks, and fall through to Step 2.
+  HeapWord* limit_bitmap = MIN2(limit, tams);
   HeapWord* cb = ctx->get_next_marked_addr(start, end);
+  while (cb < limit_bitmap) {
+    assert (cb < tams,  "only objects below TAMS here: "  PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(tams));
+    assert (cb < limit, "only objects below limit here: " PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(limit));
+    oop obj = cast_to_oop(cb);
+    assert(oopDesc::is_oop(obj), "sanity");
+    assert(ctx->is_marked(obj), "object expected to be marked");
 
-  intx dist = ShenandoahMarkScanPrefetch;
-  if (dist > 0) {
-    // Batched scan that prefetches the oop data, anticipating the access to
-    // either header, oop field, or forwarding pointer. Not that we cannot
-    // touch anything in oop, while it still being prefetched to get enough
-    // time for prefetch to work. This is why we try to scan the bitmap linearly,
-    // disregarding the object size. However, since we know forwarding pointer
-    // precedes the object, we can skip over it. Once we cannot trust the bitmap,
-    // there is no point for prefetching the oop contents, as oop->size() will
-    // touch it prematurely.
+    cb = ctx->get_next_marked_addr(cb + skip_bitmap_delta, limit_bitmap);
+    Prefetch::read(cb, 0);
+    Prefetch::read(cb, 32);
 
-    // No variable-length arrays in standard C++, have enough slots to fit
-    // the prefetch distance.
-    static const int SLOT_COUNT = 256;
-    guarantee(dist <= SLOT_COUNT, "adjust slot count");
-    HeapWord* slots[SLOT_COUNT];
-
-    int avail;
-    do {
-      avail = 0;
-      for (int c = 0; (c < dist) && (cb < limit_bitmap); c++) {
-        Prefetch::read(cb, oopDesc::mark_offset_in_bytes());
-        slots[avail++] = cb;
-        cb += skip_bitmap_delta;
-        if (cb < limit_bitmap) {
-          cb = ctx->get_next_marked_addr(cb, limit_bitmap);
-        }
-      }
-
-      for (int c = 0; c < avail; c++) {
-        assert (slots[c] < tams,  "only objects below TAMS here: "  PTR_FORMAT " (" PTR_FORMAT ")", p2i(slots[c]), p2i(tams));
-        assert (slots[c] < limit, "only objects below limit here: " PTR_FORMAT " (" PTR_FORMAT ")", p2i(slots[c]), p2i(limit));
-        oop obj = cast_to_oop(slots[c]);
-        assert(oopDesc::is_oop(obj), "sanity");
-        assert(ctx->is_marked(obj), "object expected to be marked");
-        cl->do_object(obj);
-      }
-    } while (avail > 0);
-  } else {
-    while (cb < limit_bitmap) {
-      assert (cb < tams,  "only objects below TAMS here: "  PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(tams));
-      assert (cb < limit, "only objects below limit here: " PTR_FORMAT " (" PTR_FORMAT ")", p2i(cb), p2i(limit));
-      oop obj = cast_to_oop(cb);
-      assert(oopDesc::is_oop(obj), "sanity");
-      assert(ctx->is_marked(obj), "object expected to be marked");
-      cl->do_object(obj);
-      cb += skip_bitmap_delta;
-      if (cb < limit_bitmap) {
-        cb = ctx->get_next_marked_addr(cb, limit_bitmap);
-      }
-    }
+    cl->do_object(obj);
   }
 
   // Step 2. Accurate size-based traversal, happens past the TAMS.
@@ -595,9 +554,12 @@ inline void ShenandoahHeap::marked_object_iterate(ShenandoahHeapRegion* region, 
     oop obj = cast_to_oop(cs);
     assert(oopDesc::is_oop(obj), "sanity");
     assert(ctx->is_marked(obj), "object expected to be marked");
-    size_t size = ShenandoahForwarding::size(obj);
+
+    cs += ShenandoahForwarding::size(obj);
+    Prefetch::read(cs, 0);
+    Prefetch::read(cs, 32);
+
     cl->do_object(obj);
-    cs += size;
   }
 }
 
